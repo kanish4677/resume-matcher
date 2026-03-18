@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Resume / Job Description Matcher 🎯
 
 An ML-powered tool that scores how well a resume matches a job description. Uses **semantic embeddings** (sentence-transformers) + **TF-IDF keyword analysis** to give a weighted match score, keyword gap analysis, per-section scores, and actionable recommendations.
@@ -128,3 +129,18 @@ The `TFIDFEmbedder` fallback activates automatically if `sentence-transformers` 
 ## License
 
 MIT
+=======
+---
+title: Resume Matcher
+emoji: 🐨
+colorFrom: red
+colorTo: indigo
+sdk: gradio
+sdk_version: 6.9.0
+app_file: app.py
+pinned: false
+license: other
+---
+
+Check out the configuration reference at https://huggingface.co/docs/hub/spaces-config-reference
+>>>>>>> b2cd47f18b1732a62cb19b6f97e809e34829b159
