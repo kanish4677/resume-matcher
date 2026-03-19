@@ -1,18 +1,28 @@
-import streamlit as st
-from src.matcher import ResumeMatcher
+"""
+Resume / Job Description Matcher
+Run: python3 app.py
+"""
+
 import re
+import gradio as gr
 import urllib.request
+from src.matcher import ResumeMatcher
 
-st.set_page_config(page_title="Resume Matcher", page_icon="📄", layout="wide")
+matcher = ResumeMatcher()
 
-st.title("📄 Resume / Job Description Matcher")
-st.markdown("**ML-powered ATS + Semantic matching — just like what companies use**")
 
-@st.cache_resource
-def load_matcher():
-    return ResumeMatcher()
+def extract_pdf_text(pdf_path):
+    try:
+        import fitz
+        doc = fitz.open(pdf_path)
+        text = "".join(page.get_text() for page in doc)
+        doc.close()
+        return text.strip()
+    except ImportError:
+        return "ERROR: Install PyMuPDF — run: pip3 install pymupdf"
+    except Exception as e:
+        return f"ERROR reading PDF: {str(e)}"
 
-matcher = load_matcher()
 
 def scrape_job_url(url):
     if not url or not url.startswith("http"):
@@ -28,7 +38,8 @@ def scrape_job_url(url):
         html = re.sub(r"\s+", " ", html).strip()
         return html[:4000]
     except Exception as e:
-        return f"Error fetching URL: {str(e)}"
+        return f"ERROR fetching URL: {str(e)}"
+
 
 def compute_ats_score(resume_text, jd_text):
     from src.matcher import extract_keywords, preprocess
@@ -39,82 +50,117 @@ def compute_ats_score(resume_text, jd_text):
     score = round((len(matched) / len(jd_keywords)) * 100, 1) if jd_keywords else 0
     return score, matched, missing
 
-col1, col2 = st.columns(2)
 
-with col1:
-    st.subheader("Your Resume")
-    pdf_file = st.file_uploader("Upload PDF resume", type=["pdf"])
-    resume_text = st.text_area("Or paste your resume text here", height=250)
-
-with col2:
-    st.subheader("Job Description")
-    job_url = st.text_input("Paste LinkedIn / Naukri job URL")
-    if st.button("Fetch JD from URL"):
-        if job_url:
-            with st.spinner("Fetching job description..."):
-                fetched = scrape_job_url(job_url)
-                st.session_state["jd_text"] = fetched
-    jd_text = st.text_area("Or paste job description here", 
-                            value=st.session_state.get("jd_text", ""), 
-                            height=250)
-
-st.markdown("---")
-
-if st.button("Analyse Match ▶", type="primary", use_container_width=True):
-
-    resume = ""
+def run_match(pdf_file, resume_text, job_url, jd_text):
     if pdf_file is not None:
-        try:
-            import fitz
-            pdf_bytes = pdf_file.read()
-            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-            resume = "".join(page.get_text() for page in doc)
-        except Exception as e:
-            st.error(f"Error reading PDF: {e}")
+        resume = extract_pdf_text(pdf_file)
+        if resume.startswith("ERROR"):
+            return resume, "", "", ""
     elif resume_text.strip():
         resume = resume_text.strip()
     else:
-        st.error("Please upload a PDF or paste your resume text.")
-        st.stop()
+        return "Please upload a PDF resume or paste your resume text.", "", "", ""
 
-    jd = jd_text.strip()
-    if not jd:
-        st.error("Please paste a job URL or job description text.")
-        st.stop()
+    if job_url.strip():
+        jd = scrape_job_url(job_url.strip())
+        if jd.startswith("ERROR"):
+            return "", jd, "", ""
+    elif jd_text.strip():
+        jd = jd_text.strip()
+    else:
+        return "", "Please paste a job URL or paste the job description text.", "", ""
 
-    with st.spinner("Analysing match..."):
-        result  = matcher.match(resume, jd)
-        ats_score, ats_matched, ats_missing = compute_ats_score(resume, jd)
+    result = matcher.match(resume, jd)
+    ats_score, ats_matched, ats_missing = compute_ats_score(resume, jd)
 
-    st.markdown("## Results")
+    grade = (
+        "Excellent" if result.overall_score >= 80 else
+        "Good"      if result.overall_score >= 60 else
+        "Fair"      if result.overall_score >= 40 else
+        "Poor"
+    )
+    ats_grade = (
+        "Will pass ATS"    if ats_score >= 70 else
+        "May get filtered" if ats_score >= 40 else
+        "Likely filtered by ATS"
+    )
 
-    c1, c2, c3 = st.columns(3)
-    grade = ("Excellent" if result.overall_score >= 80 else
-             "Good"      if result.overall_score >= 60 else
-             "Fair"      if result.overall_score >= 40 else "Poor")
-    ats_grade = ("Will pass ATS"      if ats_score >= 70 else
-                 "May get filtered"   if ats_score >= 40 else
-                 "Likely filtered")
+    score_md = f"""
+## Match: {grade} — {result.overall_score:.1f} / 100
 
-    c1.metric("Overall Match", f"{result.overall_score:.1f}/100", grade)
-    c2.metric("Semantic Score", f"{result.semantic_score:.1f}/100")
-    c3.metric("ATS Score", f"{ats_score}/100", ats_grade)
+| Metric | Score | What it means |
+|---|---|---|
+| Semantic similarity | {result.semantic_score:.1f} / 100 | How well your experience matches |
+| Keyword overlap | {result.keyword_score:.1f} / 100 | How many JD terms appear in resume |
+| ATS score | {ats_score} / 100 | {ats_grade} |
+"""
 
-    st.markdown("---")
-    col3, col4 = st.columns(2)
+    matched_str = "  ".join([f"`{k}`" for k in result.matched_keywords]) or "None found"
+    missing_str = "  ".join([f"`{k}`" for k in result.missing_keywords]) or "None missing!"
+    keyword_md = f"""
+### Matched keywords
+{matched_str}
 
-    with col3:
-        st.markdown("### Matched keywords")
-        st.write("  ".join([f"`{k}`" for k in result.matched_keywords]) or "None found")
-        st.markdown("### Missing from your resume")
-        st.write("  ".join([f"`{k}`" for k in result.missing_keywords]) or "None missing!")
-
-    with col4:
-        st.markdown("### Recommendations")
-        for i, rec in enumerate(result.recommendations, 1):
-            st.info(f"**{i}.** {rec}")
+### Missing from your resume
+{missing_str}
+"""
 
     if result.section_scores:
-        st.markdown("### Section scores")
-        for sec, score in sorted(result.section_scores.items(), key=lambda x: x[1], reverse=True):
-            st.progress(int(score), text=f"{sec.capitalize()}: {score:.1f}/100")
+        rows = "\n".join(
+            f"| {sec.capitalize()} | {score:.1f}/100 |"
+            for sec, score in sorted(result.section_scores.items(), key=lambda x: x[1], reverse=True)
+        )
+        section_md = f"| Section | Score |\n|---|---|\n{rows}"
+    else:
+        section_md = "Add clear section headers to your resume (Skills, Experience, Education, Projects)"
+
+    recs_md = "\n\n".join(f"**{i}.** {r}" for i, r in enumerate(result.recommendations, 1))
+
+    return score_md, keyword_md, section_md, recs_md
+
+
+def fetch_jd_from_url(url):
+    if not url.strip():
+        return ""
+    return scrape_job_url(url.strip())
+
+
+with gr.Blocks(title="Resume Matcher") as demo:
+
+    gr.Markdown("# Resume / Job Description Matcher\nML-powered ATS + Semantic matching")
+
+    with gr.Row():
+        with gr.Column():
+            gr.Markdown("### Your Resume")
+            pdf_input    = gr.File(label="Upload PDF resume", file_types=[".pdf"])
+            resume_input = gr.Textbox(placeholder="Or paste your resume text here...", lines=12)
+
+        with gr.Column():
+            gr.Markdown("### Job Description")
+            url_input  = gr.Textbox(placeholder="Paste LinkedIn / Naukri job URL here...", label="Job URL")
+            fetch_btn  = gr.Button("Fetch JD from URL", variant="secondary")
+            jd_input   = gr.Textbox(placeholder="Or paste job description here...", lines=12)
+
+    match_btn = gr.Button("Analyse Match", variant="primary")
+
+    gr.Markdown("---")
+    gr.Markdown("## Results")
+
+    with gr.Row():
+        with gr.Column():
+            score_out   = gr.Markdown()
+            keyword_out = gr.Markdown()
+        with gr.Column():
+            section_out = gr.Markdown()
+            recs_out    = gr.Markdown()
+
+    fetch_btn.click(fn=fetch_jd_from_url, inputs=[url_input], outputs=[jd_input])
+    match_btn.click(
+        fn=run_match,
+        inputs=[pdf_input, resume_input, url_input, jd_input],
+        outputs=[score_out, keyword_out, section_out, recs_out],
+    )
+
+
+if __name__ == "__main__":
+    demo.launch()
